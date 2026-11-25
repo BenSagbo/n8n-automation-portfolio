@@ -1,0 +1,486 @@
+{
+  "name": "Lead Engine: Qualify and Route",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        192
+      ],
+      "id": "0fc453f6-52dc-415b-b5d3-0b36f6785840",
+      "name": "Webhook",
+      "webhookId": "YOUR_WEBHOOK_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $json.body.data;\nconst byKey = Object.fromEntries(d.fields.map(f => [f.key, f]));\nconst val = (k) => {\n  const f = byKey[k];\n  if (!f) return '';\n  if (f.options) {\n    return f.options\n      .filter(o => (f.value || []).includes(o.id))\n      .map(o => o.text).join(', ');\n  }\n  return String(f.value ?? '').trim();\n};\n\nreturn {\n  json: {\n    firstName: val('question_lVPN4p'),\n    lastName: val('question_R87zrp'),\n    email: val('question_ol4AxX').toLowerCase(),\n    businessType: val('question_YVLO70'),\n    budget: val('question_D0l1Rp'),\n    need: val('question_lVPA86'),\n    submissionId: d.submissionId,\n    submittedAt: d.createdAt\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        192
+      ],
+      "id": "142418ed-3680-4d78-991c-4f47092566ed",
+      "name": "Clean Lead"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: \"claude-sonnet-5-5\",\n  max_tokens: 2000,\n  system: \"You qualify inbound leads for a service business that builds AI automations. Judge four things: FIT (is this an automation problem we solve?), CLARITY (is the need specific?), URGENCY (is there a pain or deadline?), and BUDGET (can they afford $500+?). HOT: strong fit, clear need, and budget that matches the scope. WARM: real fit, but the need is vague or the budget is tight. COLD: no automation fit, or clearly unable to pay. Set needs_review true for spam, tests, gibberish, or contradictions. Reason: one sentence under 20 words naming the deciding factor.\",\n  output_config: {\n    effort: \"low\",\n    format: {\n      type: \"json_schema\",\n      schema: {\n        type: \"object\",\n        properties: {\n          score: { type: \"string\", enum: [\"hot\", \"warm\", \"cold\"] },\n          reason: { type: \"string\" },\n          needs_review: { type: \"boolean\" }\n        },\n        required: [\"score\", \"reason\", \"needs_review\"],\n        additionalProperties: false\n      }\n    }\n  },\n  messages: [{\n    role: \"user\",\n    content: \"Business type: \" + $json.businessType + \"\\nBudget: \" + $json.budget + \"\\nWhat they need: \" + $json.need\n  }]\n}) }}\n\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        192
+      ],
+      "id": "eafe071f-4fa3-4c63-aeb0-ff438939dd73",
+      "name": "Score with Claude",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Anthropic"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const lead = $('Clean Lead').item.json;\nlet score = 'warm', reason = 'Could not parse AI score', needsReview = true;\n\ntry {\n  const textBlock = ($json.content || []).find(c => c.type === 'text');\n  const parsed = JSON.parse(textBlock.text);\n  if (['hot', 'warm', 'cold'].includes(parsed.score)) {\n    score = parsed.score;\n    reason = String(parsed.reason || '').slice(0, 250);\n    needsReview = parsed.needs_review === true;\n  }\n} catch (e) {\n  // keep the safe defaults: flagged for human review\n}\n\nreturn { json: { ...lead, score, reason, needsReview } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        192
+      ],
+      "id": "27d5c04c-6d30-4153-891d-40e6274a104c",
+      "name": "Parse Score"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  inputs: [{\n    idProperty: \"email\",\n    id: $json.email,\n    properties: {\n      email: $json.email,\n      firstname: $json.firstName,\n      lastname: $json.lastName,\n      lead_score: $json.score,\n      score_reason: $json.reason\n    }\n  }]\n}) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        896,
+        192
+      ],
+      "id": "e99e4254-5b55-4946-831d-1b49b018d124",
+      "name": "Upsert Contact",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "HubSpot Bearer"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $('Parse Score').item.json.needsReview }}",
+                    "rightValue": "=",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "723a960d-c9ac-4995-8291-6f9ac82d315d"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Review"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "1067de5a-6164-4361-be47-4162f3ad3b7c",
+                    "leftValue": "={{ $('Parse Score').item.json.score }}",
+                    "rightValue": "hot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Hot"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "12ef00d7-64bd-4df2-8497-2369e7b08ba5",
+                    "leftValue": "={{ $('Parse Score').item.json.score }}",
+                    "rightValue": "warm",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Warm"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 4
+                },
+                "conditions": [
+                  {
+                    "id": "843390cb-c6bf-4ac0-8363-bba14957779a",
+                    "leftValue": "={{ $('Parse Score').item.json.score }}",
+                    "rightValue": "cold",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cold"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.5,
+      "position": [
+        1120,
+        32
+      ],
+      "id": "ea69f240-f1c9-44b7-a332-7907f7edbaf5",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "mode": "list",
+          "cachedResultName": "lead-escalations"
+        },
+        "text": "=👀 Lead needs review: {{ $('Parse Score').item.json.firstName }} {{ $('Parse Score').item.json.lastName }} ({{ $('Parse Score').item.json.email }}) | Budget: {{ $('Parse Score').item.json.budget }} | Need: {{ $('Parse Score').item.json.need }} | AI note: {{ $('Parse Score').item.json.reason }}",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1344,
+        -112
+      ],
+      "id": "64a8d716-db7a-4d91-b24e-383c1d699ebc",
+      "name": "Review Alert",
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Parse Score').item.json.email }}",
+        "subject": "Let's talk about your automation project",
+        "emailType": "text",
+        "message": "=Hi {{ $('Parse Score').item.json.firstName }},\n\nThanks for reaching out. Your project sounds like a strong fit, and I'd love to hear more.\n\nGrab a time that works for you here: https://calendly.com/YOUR_LINK\n\nTalk soon,\nBen",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        80
+      ],
+      "id": "3e6d35a6-1b1d-4497-8d0e-0db1699c2230",
+      "name": "Hot leads",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Parse Score').item.json.email }}",
+        "subject": "Thanks for reaching out",
+        "emailType": "text",
+        "message": "=Hi {{ $('Parse Score').item.json.firstName }},\n\nThanks for sharing your project. I'd like to understand it a little better before we talk.\n\nCould you reply with what tools you use today and your ideal timeline?\n\nIf you'd rather talk it through, you can book a call here: https://calendly.com/YOUR_LINK\n\nBen",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        272
+      ],
+      "id": "6d74a6e6-484a-4437-ac73-3cb9f8fbee6f",
+      "name": "Warm Leads",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "lead_log",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "email",
+              "fieldValue": "={{ $('Parse Score').item.json.email }}"
+            },
+            {
+              "fieldId": "first_name",
+              "fieldValue": "={{ $('Parse Score').item.json.firstName }}"
+            },
+            {
+              "fieldId": "last_name",
+              "fieldValue": "={{ $('Parse Score').item.json.lastName }}"
+            },
+            {
+              "fieldId": "business_type",
+              "fieldValue": "={{ $('Parse Score').item.json.businessType }}"
+            },
+            {
+              "fieldId": "budget",
+              "fieldValue": "={{ $('Parse Score').item.json.budget }}"
+            },
+            {
+              "fieldId": "need",
+              "fieldValue": "={{ $('Parse Score').item.json.need }}"
+            },
+            {
+              "fieldId": "lead_score",
+              "fieldValue": "={{ $('Parse Score').item.json.score }}"
+            },
+            {
+              "fieldId": "score_reason",
+              "fieldValue": "={{ $('Parse Score').item.json.reason }}"
+            },
+            {
+              "fieldId": "needs_review",
+              "fieldValue": "={{ $('Parse Score').item.json.needsReview }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.results[0].id }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        288
+      ],
+      "id": "3e1b117c-caf4-4687-baaa-45c19cc55cf0",
+      "name": "Log to Supabase",
+      "credentials": {
+        "supabaseApi": {
+          "id": "YOUR_CREDENTIAL_ID",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1488,
+        384
+      ],
+      "id": "839c49e0-26c7-4cb9-bd25-89a897f3b181",
+      "name": "HubSpot Nurture Segment"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Clean Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Lead": {
+      "main": [
+        [
+          {
+            "node": "Score with Claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Score with Claude": {
+      "main": [
+        [
+          {
+            "node": "Parse Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Score": {
+      "main": [
+        [
+          {
+            "node": "Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log to Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Review Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Hot leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Warm Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HubSpot Nurture Segment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "YOUR_ERROR_WORKFLOW_ID",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "nodeGroups": [],
+  "tags": []
+}
